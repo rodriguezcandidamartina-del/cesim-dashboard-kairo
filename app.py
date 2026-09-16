@@ -237,6 +237,7 @@ mercado = juntar("mercado")
 shares = juntar("market_share")
 finanzas = juntar("finanzas")
 unmet = juntar("demanda_insatisfecha")
+inventario_prod = juntar("inventario_produccion")
 
 rondas = sorted(set(p["ronda"] for p in partes))
 ronda_sel = st.sidebar.selectbox("Ronda", rondas, index=len(rondas) - 1)
@@ -286,6 +287,7 @@ merc_r = base_ronda(mercado)
 shares_r = base_ronda(shares)
 fin_r = base_ronda(finanzas)
 unmet_r = base_ronda(unmet)
+inventario_prod_r = base_ronda(inventario_prod)
 
 def valor_fin(kpi, equipo=MI_EMPRESA, ronda=None):
     if finanzas.empty:
@@ -790,6 +792,33 @@ with tabs[4]:
 with tabs[5]:
     st.subheader("Producción y restricciones")
     st.caption("Se muestra la demanda insatisfecha reportada por CESIM como señal principal de restricción.")
+
+    # Agregado puntual V6: inventario y producción desde Detalles de logística
+    if not inventario_prod_r.empty:
+        st.markdown("### Inventario y producción")
+        st.caption("Datos reportados directamente por CESIM en Detalles de logística, en miles de unidades.")
+
+        tabla_inv = inventario_prod_r.pivot_table(
+            index=["equipo", "region", "tecnologia"],
+            columns="concepto", values="valor", aggfunc="sum"
+        ).reset_index()
+        orden_cols = ["equipo", "region", "tecnologia", "Inventario inicial", "Producción interna",
+                      "Producción contratada", "Total disponible", "Inventario final"]
+        for col in orden_cols:
+            if col not in tabla_inv.columns:
+                tabla_inv[col] = 0.0
+        st.dataframe(tabla_inv[orden_cols], width="stretch", hide_index=True)
+
+        inv_final = (inventario_prod_r[inventario_prod_r["campo"] == "inventario_final"]
+                     .groupby("equipo", as_index=False)["valor"].sum()
+                     .rename(columns={"valor": "Inventario final"}))
+        if not inv_final.empty:
+            fig_inv = px.bar(
+                inv_final.sort_values("Inventario final", ascending=False),
+                x="equipo", y="Inventario final",
+                title="Inventario final total por empresa · miles de unidades",
+            )
+            st.plotly_chart(fig_inv, width="stretch")
 
     if not unmet_r.empty:
         st.dataframe(
