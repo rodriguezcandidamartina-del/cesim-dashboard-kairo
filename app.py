@@ -220,17 +220,21 @@ if not archivos_locales:
     st.stop()
 
 @st.cache_data(show_spinner=False)
-def parsear_archivo_local(path_str, modified_time):
+def parsear_archivo_local(path_str, modified_time, parser_cache_version="inventario-retorno-v2"):
     path = Path(path_str)
     return procesar_archivo(path.name, path.read_bytes())
 
 partes = [
-    parsear_archivo_local(str(path), path.stat().st_mtime_ns)
+    parsear_archivo_local(str(path), path.stat().st_mtime_ns, "inventario-retorno-v2")
     for path in archivos_locales
 ]
 
 def juntar(clave):
-    dfs = [p[clave] for p in partes if not p[clave].empty]
+    dfs = []
+    for parte in partes:
+        df_parte = parte.get(clave, pd.DataFrame())
+        if isinstance(df_parte, pd.DataFrame) and not df_parte.empty:
+            dfs.append(df_parte)
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 mercado = juntar("mercado")
