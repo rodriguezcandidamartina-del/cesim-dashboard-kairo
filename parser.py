@@ -216,6 +216,7 @@ def extraer_finanzas(df, ronda):
         "ROCE, %": _extraer_fila_unica(df, "Rentabilidad del capital empleado (ROCE)"),
         "ROE, %": _extraer_fila_unica(df, "Rendimiento de los Fondos Propios (ROE)"),
         "Capitalización de mercado, miles USD": _extraer_fila_unica(df, "Capitalización de mercado de la empresa, miles USD"),
+        "Retorno total acumulado del accionista (p.a.), %": _extraer_fila_unica(df, "Retorno total acumulado del accionista (p.a.), %"),
     }
 
     registros = []
@@ -223,6 +224,48 @@ def extraer_finanzas(df, ronda):
         for equipo, valor in valores.items():
             if pd.notna(valor):
                 registros.append({"ronda": ronda, "equipo": equipo, "kpi": kpi, "valor": float(valor)})
+    return pd.DataFrame(registros)
+
+
+def extraer_inventario_produccion_logistica(df, ronda):
+    """Lee del Detalle de logística los movimientos clave por tecnología, región y empresa."""
+    equipos = get_equipos(df)
+    if not equipos:
+        return pd.DataFrame()
+
+    etiquetas = {
+        "Inventario inicial": "inventario_inicial",
+        "Producción interna": "produccion_interna",
+        "Producción contratada": "produccion_contratada",
+        "Total disponible": "total_disponible",
+        "Inventario final": "inventario_final",
+    }
+    registros = []
+    for tech_num, tech in enumerate(TECNOLOGIAS, start=1):
+        inicio = _fila_por_texto(df, f"{tech}, miles unidades")
+        if inicio is None:
+            continue
+        siguiente = _fila_por_texto(df, f"Tec {tech_num+1}, miles unidades", inicio=inicio+1) if tech_num < 4 else None
+        fin = siguiente if siguiente is not None else min(inicio + 40, len(df))
+        region_actual = None
+        for i in range(inicio + 1, fin):
+            c0 = df.iloc[i, 0]
+            if c0 in ["EE.UU.", "Asia", "Europa"] and df.iloc[i, 1:].isna().all():
+                region_actual = c0
+                continue
+            if not region_actual or not isinstance(c0, str) or c0.strip() not in etiquetas:
+                continue
+            campo = etiquetas[c0.strip()]
+            for j, eq in enumerate(equipos, start=1):
+                if j >= df.shape[1]:
+                    continue
+                val = pd.to_numeric(df.iloc[i, j], errors="coerce")
+                if pd.notna(val):
+                    registros.append({
+                        "ronda": ronda, "region": region_actual, "tecnologia": tech,
+                        "equipo": eq, "concepto": c0.strip(), "campo": campo,
+                        "valor": float(val),
+                    })
     return pd.DataFrame(registros)
 
 
@@ -273,5 +316,6 @@ def procesar_archivo(nombre, contenido):
         "mercado": extraer_mercado(df, ronda),
         "market_share": extraer_market_share(df, ronda),
         "finanzas": extraer_finanzas(df, ronda),
+        "inventario_produccion": extraer_inventario_produccion_logistica(df, ronda),
         "demanda_insatisfecha": extraer_demanda_insatisfecha_logistica(df, ronda),
     }
