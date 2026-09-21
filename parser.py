@@ -129,6 +129,44 @@ def extraer_mercado(df, ronda):
 
 
 
+
+def extraer_promocion_por_tec(df, ronda):
+    """Promoción por región, tecnología y empresa desde el desglose de margen CESIM."""
+    registros = []
+    titulos = {}
+    for region in REGIONES:
+        patron = f"Desglose de margen por tec, miles USD, {region}"
+        fila = _fila_por_texto(df, patron)
+        if fila is not None:
+            titulos[region] = fila
+
+    orden = sorted(titulos.items(), key=lambda x: x[1])
+    for pos, (region, inicio) in enumerate(orden):
+        fin = orden[pos + 1][1] if pos + 1 < len(orden) else min(inicio + 90, len(df))
+        _, equipos_cols = _header_equipos_cercano(df, inicio)
+        if not equipos_cols:
+            continue
+
+        for tech in TECNOLOGIAS:
+            fila_tech = _fila_por_texto(df, tech, inicio=inicio, fin=fin)
+            if fila_tech is None:
+                continue
+            fila_promo = _fila_por_texto(df, "Promoción", inicio=fila_tech + 1, fin=min(fila_tech + 16, fin))
+            if fila_promo is None:
+                fila_promo = _fila_por_texto(df, "Promocion", inicio=fila_tech + 1, fin=min(fila_tech + 16, fin))
+            if fila_promo is None:
+                continue
+
+            for col, equipo in equipos_cols.items():
+                val = df.iloc[fila_promo, col] if col < df.shape[1] else None
+                val = pd.to_numeric(val, errors="coerce")
+                if pd.notna(val):
+                    registros.append({
+                        "ronda": ronda, "region": region, "tecnologia": tech,
+                        "equipo": equipo, "promocion": float(val),
+                    })
+    return pd.DataFrame(registros)
+
 def extraer_market_share(df, ronda):
     """Cuotas por región, tecnología y total."""
     secciones = {
@@ -349,9 +387,16 @@ def extraer_esg(df, ronda):
 def procesar_archivo(nombre, contenido):
     df = load_results_sheet(io.BytesIO(contenido))
     ronda = extraer_ronda(nombre, df)
+    mercado = extraer_mercado(df, ronda)
+    promocion = extraer_promocion_por_tec(df, ronda)
+    if not mercado.empty and not promocion.empty:
+        mercado = mercado.drop(columns=["promocion"], errors="ignore").merge(
+            promocion, on=["ronda", "region", "tecnologia", "equipo"], how="left"
+        )
+
     return {
         "ronda": ronda,
-        "mercado": extraer_mercado(df, ronda),
+        "mercado": mercado,
         "market_share": extraer_market_share(df, ronda),
         "finanzas": extraer_finanzas(df, ronda),
         "esg": extraer_esg(df, ronda),
