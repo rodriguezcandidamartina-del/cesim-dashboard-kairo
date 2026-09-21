@@ -220,26 +220,23 @@ if not archivos_locales:
     st.stop()
 
 @st.cache_data(show_spinner=False)
-def parsear_archivo_local(path_str, modified_time, parser_cache_version="inventario-retorno-v2"):
+def parsear_archivo_local(path_str, modified_time):
     path = Path(path_str)
     return procesar_archivo(path.name, path.read_bytes())
 
 partes = [
-    parsear_archivo_local(str(path), path.stat().st_mtime_ns, "inventario-retorno-v2")
+    parsear_archivo_local(str(path), path.stat().st_mtime_ns)
     for path in archivos_locales
 ]
 
 def juntar(clave):
-    dfs = []
-    for parte in partes:
-        df_parte = parte.get(clave, pd.DataFrame())
-        if isinstance(df_parte, pd.DataFrame) and not df_parte.empty:
-            dfs.append(df_parte)
+    dfs = [p[clave] for p in partes if not p[clave].empty]
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 mercado = juntar("mercado")
 shares = juntar("market_share")
 finanzas = juntar("finanzas")
+esg = juntar("esg")
 unmet = juntar("demanda_insatisfecha")
 inventario_prod = juntar("inventario_produccion")
 
@@ -870,57 +867,81 @@ with tabs[6]:
 
 # ---------- Competencia ----------
 with tabs[7]:
-    st.subheader("KAIRO vs competencia")
+    st.subheader("Competencia — evolución comparativa")
+    st.caption(
+        "Compará a KAIRO con todos los competidores a través de todas las rondas. "
+        "Verde = la variable subió vs. la ronda anterior; rojo = bajó; neutro = sin cambio o sin base de comparación."
+    )
 
     c1, c2 = st.columns(2)
     reg = c1.selectbox("Región", REGIONES, key="comp_reg")
     tec = c2.selectbox("Tecnología", TECNOLOGIAS, key="comp_tec")
 
-    sub = merc_r[(merc_r.region == reg) & (merc_r.tecnologia == tec)].copy()
-    share_sub = shares_r[
-        (shares_r.region == reg) &
-        (shares_r.tecnologia == tec)
-    ][["equipo", "market_share_pct"]]
+    # Orden estable: KAIRO primero y luego el resto de empresas disponibles.
+    empresas_comp = sorted(set(equipos), key=lambda x: (x != MI_EMPRESA, str(x)))
 
-    if not sub.empty:
-        sub = sub.merge(share_sub, on="equipo", how="left")
+    def tabla_competencia(df_base, valor_col, titulo, formato="numero", filtrar=True):
+        st.markdown(f"### {titulo}")
+        sub = df_base.copy()
+        if filtrar:
+            sub = sub[(sub["region"] == reg) & (sub["tecnologia"] == tec)]
+        if sub.empty or valor_col not in sub.columns:
+            st.info(f"No encontré datos de {titulo.lower()} para esta selección.")
+            return
 
-        fig = px.scatter(
-            sub,
-            x="precio",
-            y="ventas",
-            size="caracteristicas",
-            color="market_share_pct",
-            text="equipo",
-            hover_data=["marketing", "demanda", "market_share_pct"],
-            title=f"Mapa competitivo · {reg} · {tec}",
-        )
-        fig.update_traces(textposition="top center")
-        st.plotly_chart(fig, width="stretch")
+        sub = sub[["ronda", "equipo", valor_col]].copy()
+        sub[valor_col] = pd.to_numeric(sub[valor_col], errors="coerce")
+        sub = sub.dropna(subset=[valor_col])
+        if sub.empty:
+            st.info(f"No encontré datos numéricos de {titulo.lower()} para esta selección.")
+            return
 
-        comp_cols = st.columns(2)
-        with comp_cols[0]:
-            fig = ranking_bar(
-                sub,
-                "market_share_pct",
-                "Ranking de market share",
-                "Market share (%)",
-                suffix="%",
-            )
-            if fig:
-                st.plotly_chart(fig, width="stretch")
+        pivot = sub.pivot_table(index="ronda", columns="equipo", values=valor_col, aggfunc="first")
+        pivot = pivot.reindex(index=sorted(pivot.index))
+        cols = [e for e in empresas_comp if e in pivot.columns]
+        pivot = pivot.reindex(columns=cols)
+        variacion = pivot.pct_change(fill_method=None) * 100
 
-        with comp_cols[1]:
-            fig = ranking_bar(
-                sub,
-                "ventas",
-                "Ranking de ventas",
-                "Miles de unidades",
-            )
-            if fig:
-                st.plotly_chart(fig, width="stretch")
-    else:
-        st.info("No hay oferta para esa combinación.")
+        salida = pd.DataFrame(index=[f"R{int(r)}" for r in pivot.index])
+        for eq in cols:
+            salida[(eq, "Total")] = pivot[eq].values
+            salida[(eq, "Var. %")] = variacion[eq].values
+        salida.columns = pd.MultiIndex.from_tuples(salida.columns, names=["Empresa", ""])
+        salida.index.name = "Ronda"
+
+        def estilo_cambio(data):
+            estilos = pd.DataFrame("", index=data.index, columns=data.columns)
+            for eq in cols:
+                var_col = (eq, "Var. %")
+                total_col = (eq, "Total")
+                for idx in data.index:
+                    v = data.loc[idx, var_col]
+                    if pd.isna(v) or abs(v) < 1e-12:
+                        continue
+                    css = "background-color: #dcfce7; color: #166534;" if v > 0 else "background-color: #fee2e2; color: #991b1b;"
+                    estilos.loc[idx, var_col] = css
+                    estilos.loc[idx, total_col] = css
+            return estilos
+
+        styler = salida.style.apply(estilo_cambio, axis=None)
+        if formato == "porcentaje":
+            fmts = {(eq, "Total"): "{:.2f}%" for eq in cols}
+        elif formato == "entero":
+            fmts = {(eq, "Total"): "{:,.0f}" for eq in cols}
+        else:
+            fmts = {(eq, "Total"): "{:,.2f}" for eq in cols}
+        fmts.update({(eq, "Var. %"): "{:+.2f}%" for eq in cols})
+        st.dataframe(styler.format(fmts, na_rep="—"), width="stretch")
+
+    # Las cuatro variables comerciales responden a Región + Tecnología.
+    tabla_competencia(mercado, "precio", "Precio de venta", "numero")
+    tabla_competencia(mercado, "caracteristicas", "Características ofrecidas", "entero")
+    tabla_competencia(mercado, "promocion", "Promoción invertida", "numero")
+    tabla_competencia(shares, "market_share_pct", "Cuota de mercado", "porcentaje")
+
+    # ESG es un indicador global por empresa; no se fuerza una desagregación inexistente.
+    st.caption("El puntaje ESG es global por empresa y no cambia con los filtros de Región y Tecnología.")
+    tabla_competencia(esg, "puntaje_esg", "Puntaje ESG", "numero", filtrar=False)
 
 # ---------- Evolución ----------
 with tabs[8]:
