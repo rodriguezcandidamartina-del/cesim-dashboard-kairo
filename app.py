@@ -220,7 +220,7 @@ if not archivos_locales:
     st.stop()
 
 @st.cache_data(show_spinner=False)
-def parsear_archivo_local(path_str, modified_time):
+def parsear_archivo_local(path_str, modified_time, parser_version="promo_v2"):
     path = Path(path_str)
     return procesar_archivo(path.name, path.read_bytes())
 
