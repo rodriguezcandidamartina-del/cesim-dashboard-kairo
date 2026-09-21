@@ -98,9 +98,6 @@ def extraer_mercado(df, ronda):
                     datos["caracteristicas"] = i
                 elif lbl == "Enfoque de la estrategia de marketing":
                     datos["marketing"] = i
-                elif "promoción" in lbl.lower() or "promocion" in lbl.lower():
-                    # CESIM puede variar levemente el nombre de la fila entre versiones.
-                    datos["promocion"] = i
                 elif lbl == "Ventas, miles unidades":
                     datos["ventas"] = i
                 elif lbl == "Demanda, miles unidades":
@@ -125,47 +122,80 @@ def extraer_mercado(df, ronda):
         result["cobertura_demanda_pct"] = (
             result["ventas"] / result["demanda"].replace(0, pd.NA) * 100
         )
+
+    # CESIM informa la promoción por tecnología en el desglose de margen.
+    promo = extraer_promocion_por_region_tecnologia(df, ronda)
+    if not result.empty and not promo.empty:
+        result = result.merge(
+            promo,
+            on=["ronda", "region", "tecnologia", "equipo"],
+            how="left",
+        )
     return result
 
 
 
 
-def extraer_promocion_por_tec(df, ronda):
-    """Promoción por región, tecnología y empresa desde el desglose de margen CESIM."""
+def extraer_promocion_por_region_tecnologia(df, ronda):
+    """Promoción (miles USD) por región, tecnología y empresa desde Desglose de margen por tec."""
     registros = []
-    titulos = {}
-    for region in REGIONES:
-        patron = f"Desglose de margen por tec, miles USD, {region}"
-        fila = _fila_por_texto(df, patron)
-        if fila is not None:
-            titulos[region] = fila
+    titulos = {
+        "EE.UU.": "Desglose de margen por tec, miles USD, EE.UU.",
+        "Asia": "Desglose de margen por tec, miles USD, Asia",
+        "Europa": "Desglose de margen por tec, miles USD, Europa",
+    }
 
-    orden = sorted(titulos.items(), key=lambda x: x[1])
-    for pos, (region, inicio) in enumerate(orden):
-        fin = orden[pos + 1][1] if pos + 1 < len(orden) else min(inicio + 90, len(df))
-        _, equipos_cols = _header_equipos_cercano(df, inicio)
+    for region, titulo in titulos.items():
+        inicio = _fila_por_texto(df, titulo)
+        if inicio is None:
+            continue
+
+        # El siguiente desglose regional marca el final de la sección actual.
+        siguientes = []
+        for otro_titulo in titulos.values():
+            f = _fila_por_texto(df, otro_titulo, inicio=inicio + 1)
+            if f is not None:
+                siguientes.append(f)
+        fin = min(siguientes) if siguientes else min(inicio + 80, len(df))
+
+        _, equipos_cols = _header_equipos_cercano(df, inicio, max_busqueda=6)
         if not equipos_cols:
             continue
 
         for tech in TECNOLOGIAS:
-            fila_tech = _fila_por_texto(df, tech, inicio=inicio, fin=fin)
+            fila_tech = _fila_por_texto(df, tech, inicio=inicio + 1, fin=fin)
             if fila_tech is None:
                 continue
-            fila_promo = _fila_por_texto(df, "Promoción", inicio=fila_tech + 1, fin=min(fila_tech + 16, fin))
+
+            # Cada tecnología ocupa su propio bloque; buscamos Promoción sólo dentro de él.
+            tech_num = TECNOLOGIAS.index(tech)
+            if tech_num < len(TECNOLOGIAS) - 1:
+                fila_sig = _fila_por_texto(df, TECNOLOGIAS[tech_num + 1], inicio=fila_tech + 1, fin=fin)
+                fin_tech = fila_sig if fila_sig is not None else min(fila_tech + 16, fin)
+            else:
+                fin_tech = min(fila_tech + 16, fin)
+
+            fila_promo = _fila_por_texto(df, "Promoción", inicio=fila_tech + 1, fin=fin_tech)
             if fila_promo is None:
-                fila_promo = _fila_por_texto(df, "Promocion", inicio=fila_tech + 1, fin=min(fila_tech + 16, fin))
+                fila_promo = _fila_por_texto(df, "Promocion", inicio=fila_tech + 1, fin=fin_tech)
             if fila_promo is None:
                 continue
 
             for col, equipo in equipos_cols.items():
-                val = df.iloc[fila_promo, col] if col < df.shape[1] else None
-                val = pd.to_numeric(val, errors="coerce")
+                if col >= df.shape[1]:
+                    continue
+                val = pd.to_numeric(df.iloc[fila_promo, col], errors="coerce")
                 if pd.notna(val):
                     registros.append({
-                        "ronda": ronda, "region": region, "tecnologia": tech,
-                        "equipo": equipo, "promocion": float(val),
+                        "ronda": ronda,
+                        "region": region,
+                        "tecnologia": tech,
+                        "equipo": equipo,
+                        "promocion": float(val),
                     })
+
     return pd.DataFrame(registros)
+
 
 def extraer_market_share(df, ronda):
     """Cuotas por región, tecnología y total."""
@@ -387,16 +417,9 @@ def extraer_esg(df, ronda):
 def procesar_archivo(nombre, contenido):
     df = load_results_sheet(io.BytesIO(contenido))
     ronda = extraer_ronda(nombre, df)
-    mercado = extraer_mercado(df, ronda)
-    promocion = extraer_promocion_por_tec(df, ronda)
-    if not mercado.empty and not promocion.empty:
-        mercado = mercado.drop(columns=["promocion"], errors="ignore").merge(
-            promocion, on=["ronda", "region", "tecnologia", "equipo"], how="left"
-        )
-
     return {
         "ronda": ronda,
-        "mercado": mercado,
+        "mercado": extraer_mercado(df, ronda),
         "market_share": extraer_market_share(df, ronda),
         "finanzas": extraer_finanzas(df, ronda),
         "esg": extraer_esg(df, ronda),
