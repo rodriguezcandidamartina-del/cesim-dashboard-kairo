@@ -98,6 +98,9 @@ def extraer_mercado(df, ronda):
                     datos["caracteristicas"] = i
                 elif lbl == "Enfoque de la estrategia de marketing":
                     datos["marketing"] = i
+                elif "promoción" in lbl.lower() or "promocion" in lbl.lower():
+                    # CESIM puede variar levemente el nombre de la fila entre versiones.
+                    datos["promocion"] = i
                 elif lbl == "Ventas, miles unidades":
                     datos["ventas"] = i
                 elif lbl == "Demanda, miles unidades":
@@ -115,7 +118,7 @@ def extraer_mercado(df, ronda):
 
     result = pd.DataFrame(registros)
     if not result.empty:
-        for c in ["precio", "caracteristicas", "ventas", "demanda"]:
+        for c in ["precio", "caracteristicas", "promocion", "ventas", "demanda"]:
             if c in result:
                 result[c] = pd.to_numeric(result[c], errors="coerce")
         result["demanda_insatisfecha_calculada"] = (result["demanda"] - result["ventas"]).clip(lower=0)
@@ -308,6 +311,41 @@ def extraer_demanda_insatisfecha_logistica(df, ronda):
     return pd.DataFrame(registros)
 
 
+
+def extraer_esg(df, ronda):
+    """Extrae el puntaje ESG global por empresa, sin desagregar por región/tecnología."""
+    equipos = get_equipos(df)
+    if not equipos:
+        return pd.DataFrame()
+
+    # Busca filas cuyo rótulo identifique inequívocamente el indicador ESG.
+    candidatos = []
+    for i in range(len(df)):
+        v = df.iloc[i, 0]
+        if not isinstance(v, str):
+            continue
+        lbl = v.strip().lower()
+        if "esg" in lbl and any(x in lbl for x in ["puntaje", "puntuación", "puntuacion", "score"]):
+            candidatos.append(i)
+
+    # Fallback: algunas versiones lo nombran sólo como indicador/índice ESG.
+    if not candidatos:
+        for i in range(len(df)):
+            v = df.iloc[i, 0]
+            if isinstance(v, str) and "esg" in v.strip().lower():
+                candidatos.append(i)
+
+    for fila in candidatos:
+        vals = df.iloc[fila, 1:1+len(equipos)].tolist()
+        nums = [pd.to_numeric(x, errors="coerce") for x in vals]
+        if sum(pd.notna(x) for x in nums) >= max(2, len(equipos)//2):
+            return pd.DataFrame([
+                {"ronda": ronda, "equipo": eq, "puntaje_esg": float(val)}
+                for eq, val in zip(equipos, nums) if pd.notna(val)
+            ])
+    return pd.DataFrame()
+
+
 def procesar_archivo(nombre, contenido):
     df = load_results_sheet(io.BytesIO(contenido))
     ronda = extraer_ronda(nombre, df)
@@ -316,6 +354,7 @@ def procesar_archivo(nombre, contenido):
         "mercado": extraer_mercado(df, ronda),
         "market_share": extraer_market_share(df, ronda),
         "finanzas": extraer_finanzas(df, ronda),
+        "esg": extraer_esg(df, ronda),
         "inventario_produccion": extraer_inventario_produccion_logistica(df, ronda),
         "demanda_insatisfecha": extraer_demanda_insatisfecha_logistica(df, ronda),
     }
