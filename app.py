@@ -936,7 +936,8 @@ with tabs[7]:
     # Las cuatro variables comerciales responden a Región + Tecnología.
     tabla_competencia(mercado, "precio", "Precio de venta", "numero")
     tabla_competencia(mercado, "caracteristicas", "Características ofrecidas", "entero")
-    tabla_competencia(mercado, "promocion", "Promoción invertida", "numero")
+    tabla_competencia(mercado, "promocion", "Promoción invertida (miles USD)", "numero")
+    tabla_competencia(mercado, "demanda", "Demanda (miles de unidades)", "numero")
     tabla_competencia(shares, "market_share_pct", "Cuota de mercado", "porcentaje")
 
     # ESG es un indicador global por empresa; no se fuerza una desagregación inexistente.
