@@ -98,6 +98,9 @@ def extraer_mercado(df, ronda):
                     datos["caracteristicas"] = i
                 elif lbl == "Enfoque de la estrategia de marketing":
                     datos["marketing"] = i
+                elif "promoción" in lbl.lower() or "promocion" in lbl.lower():
+                    # CESIM puede variar levemente el nombre de la fila entre versiones.
+                    datos["promocion"] = i
                 elif lbl == "Ventas, miles unidades":
                     datos["ventas"] = i
                 elif lbl == "Demanda, miles unidades":
@@ -122,80 +125,47 @@ def extraer_mercado(df, ronda):
         result["cobertura_demanda_pct"] = (
             result["ventas"] / result["demanda"].replace(0, pd.NA) * 100
         )
-
-    # CESIM informa la promoción por tecnología en el desglose de margen.
-    promo = extraer_promocion_por_region_tecnologia(df, ronda)
-    if not result.empty and not promo.empty:
-        result = result.merge(
-            promo,
-            on=["ronda", "region", "tecnologia", "equipo"],
-            how="left",
-        )
     return result
 
 
 
 
-def extraer_promocion_por_region_tecnologia(df, ronda):
-    """Promoción (miles USD) por región, tecnología y empresa desde Desglose de margen por tec."""
+def extraer_promocion_por_tec(df, ronda):
+    """Promoción por región, tecnología y empresa desde el desglose de margen CESIM."""
     registros = []
-    titulos = {
-        "EE.UU.": "Desglose de margen por tec, miles USD, EE.UU.",
-        "Asia": "Desglose de margen por tec, miles USD, Asia",
-        "Europa": "Desglose de margen por tec, miles USD, Europa",
-    }
+    titulos = {}
+    for region in REGIONES:
+        patron = f"Desglose de margen por tec, miles USD, {region}"
+        fila = _fila_por_texto(df, patron)
+        if fila is not None:
+            titulos[region] = fila
 
-    for region, titulo in titulos.items():
-        inicio = _fila_por_texto(df, titulo)
-        if inicio is None:
-            continue
-
-        # El siguiente desglose regional marca el final de la sección actual.
-        siguientes = []
-        for otro_titulo in titulos.values():
-            f = _fila_por_texto(df, otro_titulo, inicio=inicio + 1)
-            if f is not None:
-                siguientes.append(f)
-        fin = min(siguientes) if siguientes else min(inicio + 80, len(df))
-
-        _, equipos_cols = _header_equipos_cercano(df, inicio, max_busqueda=6)
+    orden = sorted(titulos.items(), key=lambda x: x[1])
+    for pos, (region, inicio) in enumerate(orden):
+        fin = orden[pos + 1][1] if pos + 1 < len(orden) else min(inicio + 90, len(df))
+        _, equipos_cols = _header_equipos_cercano(df, inicio)
         if not equipos_cols:
             continue
 
         for tech in TECNOLOGIAS:
-            fila_tech = _fila_por_texto(df, tech, inicio=inicio + 1, fin=fin)
+            fila_tech = _fila_por_texto(df, tech, inicio=inicio, fin=fin)
             if fila_tech is None:
                 continue
-
-            # Cada tecnología ocupa su propio bloque; buscamos Promoción sólo dentro de él.
-            tech_num = TECNOLOGIAS.index(tech)
-            if tech_num < len(TECNOLOGIAS) - 1:
-                fila_sig = _fila_por_texto(df, TECNOLOGIAS[tech_num + 1], inicio=fila_tech + 1, fin=fin)
-                fin_tech = fila_sig if fila_sig is not None else min(fila_tech + 16, fin)
-            else:
-                fin_tech = min(fila_tech + 16, fin)
-
-            fila_promo = _fila_por_texto(df, "Promoción", inicio=fila_tech + 1, fin=fin_tech)
+            fila_promo = _fila_por_texto(df, "Promoción", inicio=fila_tech + 1, fin=min(fila_tech + 16, fin))
             if fila_promo is None:
-                fila_promo = _fila_por_texto(df, "Promocion", inicio=fila_tech + 1, fin=fin_tech)
+                fila_promo = _fila_por_texto(df, "Promocion", inicio=fila_tech + 1, fin=min(fila_tech + 16, fin))
             if fila_promo is None:
                 continue
 
             for col, equipo in equipos_cols.items():
-                if col >= df.shape[1]:
-                    continue
-                val = pd.to_numeric(df.iloc[fila_promo, col], errors="coerce")
+                val = df.iloc[fila_promo, col] if col < df.shape[1] else None
+                val = pd.to_numeric(val, errors="coerce")
                 if pd.notna(val):
                     registros.append({
-                        "ronda": ronda,
-                        "region": region,
-                        "tecnologia": tech,
-                        "equipo": equipo,
-                        "promocion": float(val),
+                        "ronda": ronda, "region": region, "tecnologia": tech,
+                        "equipo": equipo, "promocion": float(val),
                     })
-
     return pd.DataFrame(registros)
-
 
 def extraer_market_share(df, ronda):
     """Cuotas por región, tecnología y total."""
@@ -270,27 +240,13 @@ def _extraer_fila_unica(df, label):
     return {}
 
 
-def _extraer_fila_en_bloque(df, titulo, label, max_rows=40):
-    inicio = _fila_por_texto(df, titulo)
-    if inicio is None:
-        return {}
-    equipos = get_equipos(df)
-    if not equipos:
-        return {}
-    cols = {j + 1: eq for j, eq in enumerate(equipos)}
-    fila = _fila_por_texto(df, label, inicio=inicio, fin=min(inicio + max_rows, len(df)))
-    if fila is None:
-        return {}
-    return {eq: df.iloc[fila, col] if col < df.shape[1] else None for col, eq in cols.items()}
-
-
 def extraer_finanzas(df, ronda):
-    """KPIs financieros globales reportados directamente por CESIM."""
+    """KPIs financieros globales principales."""
     equipos = get_equipos(df)
     if not equipos:
         return pd.DataFrame()
 
-    filas_numericas = {
+    filas = {
         "Ingresos por ventas": _extraer_fila_global(df, "Ingresos por ventas"),
         "EBITDA": _extraer_fila_global(df, "Beneficio operativo antes de depreciación (EBITDA)"),
         "EBIT": _extraer_fila_global(df, "Beneficio operativo (EBIT)"),
@@ -298,70 +254,19 @@ def extraer_finanzas(df, ronda):
         "Activos totales": _extraer_fila_unica(df, "Activos Totales"),
         "Patrimonio neto": _extraer_fila_unica(df, "Total patrimonio neto"),
         "Deuda largo plazo": _extraer_fila_unica(df, "Deudas a largo plazo"),
-        "Margen bruto, %": _extraer_fila_en_bloque(df, "Indicadores Financieros Claves, %", "Margen bruto", 20),
-        "EBITDA, %": _extraer_fila_en_bloque(df, "Indicadores Financieros Claves, %", "Beneficio operativo antes de depreciación ( EBITDA )", 20),
-        "EBIT, %": _extraer_fila_en_bloque(df, "Indicadores Financieros Claves, %", "BENEFICIO OPERATIVO (EBIT)", 20),
-        "ROS, %": _extraer_fila_en_bloque(df, "Indicadores Financieros Claves, %", "Rentabilidad de las ventas (ROS)", 20),
-        "Ratio patrimonio neto, %": _extraer_fila_en_bloque(df, "Indicadores Financieros Claves, %", "Ratio Patrimonio neto", 20),
-        "Apalancamiento (deuda neta/patrimonio), %": _extraer_fila_en_bloque(df, "Indicadores Financieros Claves, %", "Endeudamiento neto/patrimonio (apalancamiento)", 20),
-        "ROCE, %": _extraer_fila_en_bloque(df, "Indicadores Financieros Claves, %", "Rentabilidad del capital empleado (ROCE)", 20),
-        "ROE, %": _extraer_fila_en_bloque(df, "Indicadores Financieros Claves, %", "Rendimiento de los Fondos Propios (ROE)", 20),
-        "EPS, USD": _extraer_fila_en_bloque(df, "Indicadores Financieros Claves, %", "Ganancias por acción (EPS), USD", 20),
-        "Precio de la acción, USD": _extraer_fila_en_bloque(df, "Ratios e indicadores financieros clave", "Precio de la acción al final de la ronda, USD", 25),
+        "ROCE, %": _extraer_fila_unica(df, "Rentabilidad del capital empleado (ROCE)"),
+        "ROE, %": _extraer_fila_unica(df, "Rendimiento de los Fondos Propios (ROE)"),
         "Capitalización de mercado, miles USD": _extraer_fila_unica(df, "Capitalización de mercado de la empresa, miles USD"),
         "Retorno total acumulado del accionista (p.a.), %": _extraer_fila_unica(df, "Retorno total acumulado del accionista (p.a.), %"),
     }
 
     registros = []
-    for kpi, valores in filas_numericas.items():
+    for kpi, valores in filas.items():
         for equipo, valor in valores.items():
             if pd.notna(valor):
-                registros.append({"ronda": ronda, "equipo": equipo, "kpi": kpi, "valor": float(valor), "valor_texto": None})
-
-    # ROA no aparece como KPI estándar en este bloque: beneficio de la ronda / activos totales.
-    beneficios = filas_numericas.get("Beneficio de la ronda", {})
-    activos = filas_numericas.get("Activos totales", {})
-    for equipo in equipos:
-        b = pd.to_numeric(beneficios.get(equipo), errors="coerce")
-        a = pd.to_numeric(activos.get(equipo), errors="coerce")
-        if pd.notna(b) and pd.notna(a) and a != 0:
-            registros.append({"ronda": ronda, "equipo": equipo, "kpi": "ROA, %", "valor": float(b / a * 100), "valor_texto": None})
-
-    # Calificación crediticia es texto, no un valor numérico.
-    ratings = _extraer_fila_en_bloque(df, "Indicadores Financieros Claves, %", "Calificación crediticia", 20)
-    for equipo, rating in ratings.items():
-        if pd.notna(rating):
-            registros.append({"ronda": ronda, "equipo": equipo, "kpi": "Calificación crediticia", "valor": float("nan"), "valor_texto": str(rating)})
-
+                registros.append({"ronda": ronda, "equipo": equipo, "kpi": kpi, "valor": float(valor)})
     return pd.DataFrame(registros)
 
-
-def extraer_margen_contribucion(df, ronda):
-    """Margen de contribución por región, tecnología y empresa desde el desglose CESIM."""
-    registros = []
-    titulos = {}
-    for region in REGIONES:
-        fila = _fila_por_texto(df, f"Desglose de margen por tec, miles USD, {region}")
-        if fila is not None:
-            titulos[region] = fila
-    orden = sorted(titulos.items(), key=lambda x: x[1])
-    for pos, (region, inicio) in enumerate(orden):
-        fin = orden[pos + 1][1] if pos + 1 < len(orden) else min(inicio + 90, len(df))
-        _, equipos_cols = _header_equipos_cercano(df, inicio)
-        if not equipos_cols:
-            continue
-        for tech in TECNOLOGIAS:
-            fila_tech = _fila_por_texto(df, tech, inicio=inicio, fin=fin)
-            if fila_tech is None:
-                continue
-            fila_margen = _fila_por_texto(df, "Margen de contribución", inicio=fila_tech + 1, fin=min(fila_tech + 18, fin))
-            if fila_margen is None:
-                continue
-            for col, equipo in equipos_cols.items():
-                val = pd.to_numeric(df.iloc[fila_margen, col] if col < df.shape[1] else None, errors="coerce")
-                if pd.notna(val):
-                    registros.append({"ronda": ronda, "region": region, "tecnologia": tech, "equipo": equipo, "margen_contribucion": float(val)})
-    return pd.DataFrame(registros)
 
 def extraer_inventario_produccion_logistica(df, ronda):
     """Lee del Detalle de logística los movimientos clave por tecnología, región y empresa."""
@@ -482,12 +387,18 @@ def extraer_esg(df, ronda):
 def procesar_archivo(nombre, contenido):
     df = load_results_sheet(io.BytesIO(contenido))
     ronda = extraer_ronda(nombre, df)
+    mercado = extraer_mercado(df, ronda)
+    promocion = extraer_promocion_por_tec(df, ronda)
+    if not mercado.empty and not promocion.empty:
+        mercado = mercado.drop(columns=["promocion"], errors="ignore").merge(
+            promocion, on=["ronda", "region", "tecnologia", "equipo"], how="left"
+        )
+
     return {
         "ronda": ronda,
-        "mercado": extraer_mercado(df, ronda),
+        "mercado": mercado,
         "market_share": extraer_market_share(df, ronda),
         "finanzas": extraer_finanzas(df, ronda),
-        "margen_contribucion": extraer_margen_contribucion(df, ronda),
         "esg": extraer_esg(df, ronda),
         "inventario_produccion": extraer_inventario_produccion_logistica(df, ronda),
         "demanda_insatisfecha": extraer_demanda_insatisfecha_logistica(df, ronda),
