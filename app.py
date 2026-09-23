@@ -236,6 +236,7 @@ def juntar(clave):
 mercado = juntar("mercado")
 shares = juntar("market_share")
 finanzas = juntar("finanzas")
+margen_contribucion = juntar("margen_contribucion")
 esg = juntar("esg")
 unmet = juntar("demanda_insatisfecha")
 inventario_prod = juntar("inventario_produccion")
@@ -289,6 +290,7 @@ shares_r = base_ronda(shares)
 fin_r = base_ronda(finanzas)
 unmet_r = base_ronda(unmet)
 inventario_prod_r = base_ronda(inventario_prod)
+margen_contribucion_r = base_ronda(margen_contribucion)
 
 def valor_fin(kpi, equipo=MI_EMPRESA, ronda=None):
     if finanzas.empty:
@@ -628,26 +630,6 @@ with tabs[1]:
             if fig:
                 st.plotly_chart(fig, width="stretch")
 
-        st.markdown("### Comparación integral")
-        fig = px.scatter(
-            sub,
-            x="precio",
-            y="ventas",
-            size="caracteristicas",
-            color="equipo",
-            text="equipo",
-            hover_data=["market_share_pct", "marketing", "demanda"],
-            title=f"Precio vs ventas · tamaño de burbuja = características · {reg} · {tec}",
-            labels={
-                "precio": f"Precio ({sub.moneda.iloc[0]})",
-                "ventas": "Ventas (miles)",
-                "equipo": "Empresa",
-            },
-        )
-        fig.update_traces(textposition="top center")
-        fig.update_layout(height=500)
-        st.plotly_chart(fig, width="stretch")
-
         mostrar = sub[
             ["equipo", "precio", "moneda", "ventas", "demanda",
              "market_share_pct", "caracteristicas", "marketing"]
@@ -750,120 +732,145 @@ with tabs[3]:
         if fig:
             st.plotly_chart(fig, width="stretch")
 
-        fig = px.scatter(
-            sub,
-            x="caracteristicas",
-            y="precio",
-            size="ventas",
-            text="equipo",
-            hover_data=["marketing", "demanda"],
-            title=f"Precio vs características · {reg} · {tec}",
-        )
-        fig.update_traces(textposition="top center")
-        st.plotly_chart(fig, width="stretch")
     else:
         st.info("Esa tecnología todavía no tiene oferta en esta ronda.")
 
 # ---------- Marketing ----------
 with tabs[4]:
     st.subheader("Estrategia de marketing")
-    sub = merc_r.dropna(subset=["marketing"]).copy()
+
+    m1, m2, m3 = st.columns(3)
+    reg_mkt = m1.selectbox("Región", REGIONES, key="mkt_reg")
+    tec_mkt = m2.selectbox("Tecnología", TECNOLOGIAS, key="mkt_tec")
+    empresas_mkt = sorted(merc_r["equipo"].dropna().unique()) if not merc_r.empty else []
+    idx_kairo = empresas_mkt.index(MI_EMPRESA) if MI_EMPRESA in empresas_mkt else 0
+    eq_mkt = m3.selectbox("Empresa", empresas_mkt, index=idx_kairo, key="mkt_eq") if empresas_mkt else None
+
+    sub = merc_r[
+        (merc_r.region == reg_mkt) &
+        (merc_r.tecnologia == tec_mkt) &
+        (merc_r.equipo == eq_mkt)
+    ].dropna(subset=["marketing"]).copy() if eq_mkt else pd.DataFrame()
 
     if not sub.empty:
+        st.markdown("### Cuadro resumen")
         st.dataframe(
-            sub[["equipo", "region", "tecnologia", "marketing", "precio", "caracteristicas", "ventas"]]
-            .sort_values(["region", "tecnologia", "ventas"], ascending=[True, True, False]),
+            sub[["equipo", "region", "tecnologia", "marketing", "precio", "caracteristicas", "ventas"]],
             width="stretch",
             hide_index=True,
         )
-
-        conteo = sub.groupby(["equipo", "marketing"], as_index=False).size()
-        fig = px.bar(
-            conteo,
-            x="equipo",
-            y="size",
-            color="marketing",
-            title="Enfoques de marketing utilizados por empresa",
-        )
-        st.plotly_chart(fig, width="stretch")
     else:
-        st.info("No encontré enfoques de marketing.")
+        st.info("No encontré datos de marketing para la selección elegida.")
 
 # ---------- Producción ----------
 with tabs[5]:
     st.subheader("Producción y restricciones")
-    st.caption("Se muestra la demanda insatisfecha reportada por CESIM como señal principal de restricción.")
+    st.caption("Filtrá la información para analizar una sola combinación de empresa, región y tecnología.")
 
-    # Agregado puntual V6: inventario y producción desde Detalles de logística
-    if not inventario_prod_r.empty:
+    pr1, pr2, pr3 = st.columns(3)
+    reg_prod = pr1.selectbox("Región", REGIONES, key="prod2_reg")
+    tec_prod = pr2.selectbox("Tecnología", TECNOLOGIAS, key="prod2_tec")
+    empresas_prod = sorted(inventario_prod_r["equipo"].dropna().unique()) if not inventario_prod_r.empty else []
+    idx_kairo_prod = empresas_prod.index(MI_EMPRESA) if MI_EMPRESA in empresas_prod else 0
+    eq_prod = pr3.selectbox("Empresa", empresas_prod, index=idx_kairo_prod, key="prod2_eq") if empresas_prod else None
+
+    if not inventario_prod_r.empty and eq_prod:
+        inv_filtrado = inventario_prod_r[
+            (inventario_prod_r.region == reg_prod) &
+            (inventario_prod_r.tecnologia == tec_prod) &
+            (inventario_prod_r.equipo == eq_prod)
+        ].copy()
         st.markdown("### Inventario y producción")
         st.caption("Datos reportados directamente por CESIM en Detalles de logística, en miles de unidades.")
+        if not inv_filtrado.empty:
+            tabla_inv = inv_filtrado.pivot_table(
+                index=["equipo", "region", "tecnologia"],
+                columns="concepto", values="valor", aggfunc="sum"
+            ).reset_index()
+            orden_cols = ["equipo", "region", "tecnologia", "Inventario inicial", "Producción interna",
+                          "Producción contratada", "Total disponible", "Inventario final"]
+            for col in orden_cols:
+                if col not in tabla_inv.columns:
+                    tabla_inv[col] = 0.0
+            st.dataframe(tabla_inv[orden_cols], width="stretch", hide_index=True)
+        else:
+            st.info("No encontré datos de inventario/producción para esta selección.")
 
-        tabla_inv = inventario_prod_r.pivot_table(
-            index=["equipo", "region", "tecnologia"],
-            columns="concepto", values="valor", aggfunc="sum"
-        ).reset_index()
-        orden_cols = ["equipo", "region", "tecnologia", "Inventario inicial", "Producción interna",
-                      "Producción contratada", "Total disponible", "Inventario final"]
-        for col in orden_cols:
-            if col not in tabla_inv.columns:
-                tabla_inv[col] = 0.0
-        st.dataframe(tabla_inv[orden_cols], width="stretch", hide_index=True)
-
-        inv_final = (inventario_prod_r[inventario_prod_r["campo"] == "inventario_final"]
-                     .groupby("equipo", as_index=False)["valor"].sum()
-                     .rename(columns={"valor": "Inventario final"}))
-        if not inv_final.empty:
-            fig_inv = px.bar(
-                inv_final.sort_values("Inventario final", ascending=False),
-                x="equipo", y="Inventario final",
-                title="Inventario final total por empresa · miles de unidades",
-            )
-            st.plotly_chart(fig_inv, width="stretch")
-
-    if not unmet_r.empty:
-        st.dataframe(
-            unmet_r.sort_values("demanda_insatisfecha", ascending=False),
-            width="stretch",
-            hide_index=True,
-        )
-
-        fig = px.bar(
-            unmet_r,
-            x="equipo",
-            y="demanda_insatisfecha",
-            color="region",
-            facet_col="tecnologia",
-            title="Demanda insatisfecha por tecnología y región",
-        )
-        st.plotly_chart(fig, width="stretch")
-    else:
+    if not unmet_r.empty and eq_prod:
+        unmet_filtrado = unmet_r[
+            (unmet_r.region == reg_prod) &
+            (unmet_r.tecnologia == tec_prod) &
+            (unmet_r.equipo == eq_prod)
+        ].copy()
+        st.markdown("### Demanda insatisfecha")
+        if not unmet_filtrado.empty:
+            st.dataframe(unmet_filtrado, width="stretch", hide_index=True)
+        else:
+            st.info("No hay demanda insatisfecha reportada para esta selección.")
+    elif unmet_r.empty:
         st.info("No encontré demanda insatisfecha logística.")
 
 # ---------- Finanzas ----------
 with tabs[6]:
-    st.subheader("Finanzas — comparación global")
+    st.subheader("Finanzas")
+
+    indicadores_fin = [
+        "Margen bruto, %", "EBITDA, %", "EBIT, %", "ROS, %",
+        "Ratio patrimonio neto, %", "Apalancamiento (deuda neta/patrimonio), %",
+        "ROCE, %", "ROE, %", "ROA, %", "EPS, USD",
+        "Precio de la acción, USD", "Calificación crediticia",
+    ]
 
     if not fin_r.empty:
-        kpi = st.selectbox("Indicador", sorted(fin_r.kpi.unique()), key="fin_kpi")
-        sub = fin_r[fin_r.kpi == kpi].copy()
+        st.markdown("### Resumen de indicadores financieros")
+        resumen = fin_r[fin_r.kpi.isin(indicadores_fin)].copy()
+        if not resumen.empty:
+            resumen["Mostrar"] = resumen.apply(
+                lambda r: r.get("valor_texto") if pd.notna(r.get("valor_texto")) else r.get("valor"), axis=1
+            )
+            tabla_fin = resumen.pivot_table(index="kpi", columns="equipo", values="Mostrar", aggfunc="first")
+            orden = [x for x in indicadores_fin if x in tabla_fin.index]
+            st.dataframe(tabla_fin.reindex(orden), width="stretch")
 
-        fig = ranking_bar(
-            sub.rename(columns={"valor": "metrica"}),
-            "metrica",
-            f"{kpi} · Ronda {ronda_sel}",
-            kpi,
-        )
-        if fig:
-            st.plotly_chart(fig, width="stretch")
-
-        st.dataframe(
-            sub.sort_values("valor", ascending=False),
-            width="stretch",
-            hide_index=True,
-        )
+        kpis_num = [k for k in indicadores_fin if k != "Calificación crediticia" and k in set(fin_r.kpi)]
+        if kpis_num:
+            kpi = st.selectbox("Indicador para comparar", kpis_num, key="fin_kpi")
+            sub = fin_r[(fin_r.kpi == kpi) & fin_r.valor.notna()].copy()
+            fig = ranking_bar(
+                sub.rename(columns={"valor": "metrica"}), "metrica",
+                f"{kpi} · Ronda {ronda_sel}", kpi,
+            )
+            if fig:
+                st.plotly_chart(fig, width="stretch")
     else:
         st.info("No encontré indicadores financieros.")
+
+    st.markdown("### Margen de contribución por región y tecnología")
+    mc1, mc2 = st.columns(2)
+    reg_mc = mc1.selectbox("Región", REGIONES, key="fin_mc_reg")
+    tec_mc = mc2.selectbox("Tecnología", TECNOLOGIAS, key="fin_mc_tec")
+    if not margen_contribucion_r.empty:
+        mc = margen_contribucion_r[
+            (margen_contribucion_r.region == reg_mc) &
+            (margen_contribucion_r.tecnologia == tec_mc)
+        ].copy()
+        if not mc.empty:
+            fig_mc = ranking_bar(
+                mc.rename(columns={"margen_contribucion": "metrica"}), "metrica",
+                f"Margen de contribución · {reg_mc} · {tec_mc} · Ronda {ronda_sel}",
+                "Miles USD",
+            )
+            if fig_mc:
+                st.plotly_chart(fig_mc, width="stretch")
+            st.dataframe(
+                mc[["equipo", "region", "tecnologia", "margen_contribucion"]]
+                .sort_values("margen_contribucion", ascending=False),
+                width="stretch", hide_index=True,
+            )
+        else:
+            st.info("No encontré margen de contribución para esta selección.")
+    else:
+        st.info("No encontré datos de margen de contribución en esta ronda.")
 
 # ---------- Competencia ----------
 with tabs[7]:
